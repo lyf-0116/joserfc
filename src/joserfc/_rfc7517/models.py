@@ -1,6 +1,9 @@
 from abc import ABCMeta, abstractmethod
 from collections.abc import KeysView
+from datetime import datetime
 from typing import Any, ClassVar, Generic, Literal, Self, TypeVar, cast, overload
+
+from cryptography import x509
 
 from .._rfc7638 import calculate_thumbprint
 from .._rfc9278 import concat_thumbprint_uri
@@ -18,6 +21,13 @@ from ..registry import (
 )
 from ..util import to_bytes
 from .types import AnyKey, DictKey, KeyParameters
+from .x509 import (
+    certificate_thumbprint,
+    check_certificate_matches_public_key,
+    fingerprints_equal,
+    load_certificate_chain,
+    verify_certificate_chain,
+)
 
 NativePrivateKey = TypeVar("NativePrivateKey")
 NativePublicKey = TypeVar("NativePublicKey")
@@ -94,6 +104,7 @@ class BaseKey(Generic[NativePrivateKey, NativePublicKey], metaclass=ABCMeta):
         self.original_value = original_value
         self.extra_parameters = parameters
         self._dict_value: DictKey = {}
+        self._x5c_certificates: list[x509.Certificate] | None = None
         if isinstance(original_value, dict):
             if parameters is not None:
                 data = {**original_value, **parameters, "kty": self.key_type}
@@ -101,6 +112,7 @@ class BaseKey(Generic[NativePrivateKey, NativePublicKey], metaclass=ABCMeta):
                 data = {**original_value, "kty": self.key_type}
             self.validate_dict_key(data)
             self._dict_value = data
+            self._validate_x5c()
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, self.__class__):
@@ -134,6 +146,36 @@ class BaseKey(Generic[NativePrivateKey, NativePublicKey], metaclass=ABCMeta):
         return cast(str | None, self.get("alg"))
 
     @property
+    def x5c(self) -> list[str] | None:
+        """The "x5c" certificate chain of the JSON Web Key."""
+        return cast(list[str] | None, self.get("x5c"))
+
+    @property
+    def x5t(self) -> str | None:
+        """The SHA-1 certificate thumbprint of the JSON Web Key."""
+        return cast(str | None, self.get("x5t"))
+
+    @property
+    def x5t_s256(self) -> str | None:
+        """The SHA-256 certificate thumbprint of the JSON Web Key."""
+        return cast(str | None, self.get("x5t#S256"))
+
+    @property
+    def x5c_certificates(self) -> list[x509.Certificate] | None:
+        """The parsed certificates from the "x5c" parameter."""
+        chain = self.x5c
+        if chain is None:
+            return None
+        if self._x5c_certificates is None:
+            self._x5c_certificates = load_certificate_chain(chain)
+        return self._x5c_certificates
+
+    @property
+    def certificate_chain(self) -> list[x509.Certificate] | None:
+        """Alias of :attr:`x5c_certificates`."""
+        return self.x5c_certificates
+
+    @property
     def raw_value(self) -> NativePrivateKey | NativePublicKey:
         raise NotImplementedError()
 
@@ -153,6 +195,7 @@ class BaseKey(Generic[NativePrivateKey, NativePublicKey], metaclass=ABCMeta):
         data["kty"] = self.key_type
         self.validate_dict_key(data)
         self._dict_value = data
+        self._validate_x5c()
         return data
 
     @property
@@ -176,6 +219,83 @@ class BaseKey(Generic[NativePrivateKey, NativePublicKey], metaclass=ABCMeta):
         defined in RFC9278."""
         value = self.thumbprint()
         return concat_thumbprint_uri(value, self.thumbprint_digest_method)
+
+    def certificate_thumbprint(self, digest_method: Literal["sha1", "sha256"] = "sha256") -> str | None:
+        """Return the X.509 thumbprint of the first certificate in ``x5c``."""
+        certificates = self.x5c_certificates
+        if not certificates:
+            return None
+        return certificate_thumbprint(certificates[0], digest_method)
+
+    def matches_fingerprint(self, value: str, digest_method: Literal["sha1", "sha256"] = "sha256") -> bool:
+        """Check this key against an X.509 certificate thumbprint."""
+        field = "x5t" if digest_method == "sha1" else "x5t#S256"
+        stored = self.get(field)
+        if isinstance(stored, str) and fingerprints_equal(stored, value):
+            return True
+        thumbprint = self.certificate_thumbprint(digest_method)
+        return thumbprint is not None and fingerprints_equal(thumbprint, value)
+
+    def verify_certificate_chain(
+        self,
+        trust_anchors: Any = None,
+        at_time: datetime | None = None,
+        trusted_ca: Any = None,
+    ) -> None:
+        """Validate the ``x5c`` chain and optionally require it to chain to
+        the given trust anchors.
+
+        Keys without an ``x5c`` parameter are accepted as-is, so deployments
+        that only publish the raw public key keep working. If ``x5c`` is
+        present, the chain is validated strictly.
+        """
+        if trust_anchors is None:
+            trust_anchors = trusted_ca
+        certificates = self.x5c_certificates
+        if certificates is None:
+            return
+        verify_certificate_chain(certificates, trust_anchors, at_time)
+
+    def verify_x5c(
+        self,
+        trust_anchors: Any = None,
+        at_time: datetime | None = None,
+        trusted_ca: Any = None,
+    ) -> None:
+        """Alias of :meth:`verify_certificate_chain`."""
+        self.verify_certificate_chain(trust_anchors, at_time, trusted_ca)
+
+    def verify_chain(
+        self,
+        trust_anchors: Any = None,
+        at_time: datetime | None = None,
+        trusted_ca: Any = None,
+    ) -> None:
+        """Alias of :meth:`verify_certificate_chain`."""
+        self.verify_certificate_chain(trust_anchors, at_time, trusted_ca)
+
+    def _validate_x5c(self) -> None:
+        chain = self.x5c
+        if chain is None:
+            self._x5c_certificates = None
+            return
+
+        certificates = load_certificate_chain(chain)
+        check_certificate_matches_public_key(certificates[0], self.public_key)
+
+        x5t = self.get("x5t")
+        if isinstance(x5t, str):
+            thumbprint = certificate_thumbprint(certificates[0], "sha1")
+            if not fingerprints_equal(x5t, thumbprint):
+                raise KeyParameterError("'x5t' does not match the 'x5c' certificate")
+
+        x5t_s256 = self.get("x5t#S256")
+        if isinstance(x5t_s256, str):
+            thumbprint = certificate_thumbprint(certificates[0], "sha256")
+            if not fingerprints_equal(x5t_s256, thumbprint):
+                raise KeyParameterError("'x5t#S256' does not match the 'x5c' certificate")
+
+        self._x5c_certificates = certificates
 
     def as_dict(self, private: bool = False, **params: Any) -> DictKey:
         """Output this key to a JWK format (in dict). By default, it will return

@@ -160,6 +160,18 @@ class BadSignatureError(JoseError):
     error = "bad_signature"
 
 
+class InvalidCertificateChainError(KeyParameterError, BadSignatureError):
+    """Raised when an X.509 certificate chain can not be trusted."""
+
+    error = "invalid_certificate_chain"
+
+
+# Descriptive aliases for callers that treat certificate errors separately
+# from other key parameter errors.
+CertificateChainError = InvalidCertificateChainError
+X509CertificateError = InvalidCertificateChainError
+
+
 class ExceededSizeError(JoseError):
     """This error is designed for validating the token's content size.
     It raised when the data exceeds the maximum allowed length."""

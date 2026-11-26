@@ -88,6 +88,12 @@ def guess_key(
         parameters: KeyParameters = {"alg": headers["alg"]}
         if use:
             parameters["use"] = use
+        x5t = headers.get("x5t")
+        if isinstance(x5t, str):
+            parameters["x5t"] = x5t
+        x5t_s256 = headers.get("x5t#S256")
+        if isinstance(x5t_s256, str):
+            parameters["x5t#S256"] = x5t_s256
 
         if not kid and random:
             # choose one key by random

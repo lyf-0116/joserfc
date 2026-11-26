@@ -1,6 +1,6 @@
 import random
 from collections.abc import Iterator
-from typing import Any, ClassVar, Self, TypedDict, cast
+from typing import Any, ClassVar, Literal, Self, TypedDict, cast
 
 from ._rfc7517.types import AnyKey, DictKey, KeyParameters
 from ._rfc7518.ec_key import ECKey
@@ -140,8 +140,32 @@ class KeySet:
             keys.append(key.as_dict(private=private, **params))
         return {"keys": keys}
 
-    def get_by_kid(self, kid: str | None = None, parameters: KeyParameters | None = None) -> Key:
-        if kid is None and len(self.keys) == 1:
+    def get_by_kid(
+        self,
+        kid: str | None = None,
+        parameters: KeyParameters | None = None,
+        x5t: str | None = None,
+        x5t_s256: str | None = None,
+        fingerprint: str | None = None,
+        digest_method: Literal["sha1", "sha256"] = "sha256",
+    ) -> Key:
+        if any(value is not None for value in (x5t, x5t_s256, fingerprint)):
+            _parameters = cast(KeyParameters, dict(parameters)) if parameters else {}
+            if x5t is not None:
+                _parameters["x5t"] = x5t
+            if x5t_s256 is not None:
+                _parameters["x5t#S256"] = x5t_s256
+            if fingerprint is not None:
+                if digest_method == "sha1":
+                    _parameters["x5t"] = fingerprint
+                else:
+                    _parameters["x5t#S256"] = fingerprint
+            parameters = _parameters
+
+        has_fingerprint = parameters is not None and any(
+            isinstance(parameters.get(name), str) for name in ("x5t", "x5t#S256", "x5c")
+        )
+        if kid is None and len(self.keys) == 1 and not has_fingerprint:
             return self.keys[0]
 
         if kid is None:
@@ -158,6 +182,24 @@ class KeySet:
         if keys and (kid is not None or len(keys) == 1):
             return keys[0]
         raise InvalidKeyIdError(f"No key for kid: '{kid}'")
+
+    def get_by_fingerprint(
+        self,
+        fingerprint: str,
+        parameters: KeyParameters | None = None,
+        digest_method: Literal["sha1", "sha256"] = "sha256",
+    ) -> Key:
+        """Select a key whose X.509 certificate matches ``fingerprint``."""
+        _parameters = cast(KeyParameters, dict(parameters)) if parameters else {}
+        if digest_method == "sha1":
+            _parameters["x5t"] = fingerprint
+        else:
+            _parameters["x5t#S256"] = fingerprint
+        return self.get_by_kid(None, _parameters)
+
+    def get_by_x5t(self, fingerprint: str, parameters: KeyParameters | None = None) -> Key:
+        """Select a key by its SHA-256 certificate thumbprint."""
+        return self.get_by_fingerprint(fingerprint, parameters, "sha256")
 
     def pick_random_key(self, algorithm: str | None = None, parameters: KeyParameters | None = None) -> Key | None:
         key_types = self.algorithm_keys.get(algorithm) if algorithm else None
@@ -219,6 +261,14 @@ def _filter_keys_by_parameters(keys: list[Key], parameters: KeyParameters) -> It
 
         designed_alg = key.get("alg")
         if designed_alg and _alg and designed_alg != _alg:
+            continue
+
+        x5t = parameters.get("x5t")
+        if isinstance(x5t, str) and not key.matches_fingerprint(x5t, "sha1"):
+            continue
+
+        x5t_s256 = parameters.get("x5t#S256")
+        if isinstance(x5t_s256, str) and not key.matches_fingerprint(x5t_s256, "sha256"):
             continue
 
         yield key

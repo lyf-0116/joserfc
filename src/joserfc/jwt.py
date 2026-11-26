@@ -1,6 +1,8 @@
 import json
 from collections.abc import Collection
+from datetime import datetime
 from json import JSONDecoder, JSONEncoder
+from typing import Any
 
 from ._rfc7519.claims import (
     BaseClaimsRegistry,
@@ -90,6 +92,10 @@ def decode(
     algorithms: Collection[str] | None = None,
     registry: JWSRegistry | JWERegistry | None = None,
     decoder_cls: type[JSONDecoder] | None = None,
+    verify_x5c: Any = False,
+    trusted_ca: Any = None,
+    at_time: datetime | None = None,
+    **options: Any,
 ) -> Token:
     """Decode the JSON Web Token string with the given key, and validate
     it with the claims requests.
@@ -99,6 +105,9 @@ def decode(
     :param algorithms: a collection (list, tuple, or set) of allowed algorithms
     :param registry: a ``JWSRegistry`` or ``JWERegistry`` to use
     :param decoder_cls: A JSONDecoder subclass to use
+    :param verify_x5c: validate the ``x5c`` chain when present
+    :param trusted_ca: trust anchor(s) used for ``x5c`` chain validation
+    :param at_time: optional time used for certificate validity checks
     :raise BadSignatureError: when signature verification fails
     :raise InvalidPayloadError: when payload is not a valid JSON object
     """
@@ -108,7 +117,16 @@ def decode(
     if isinstance(registry, JWERegistry):
         header, payload = _decode_jwe(_value, key, algorithms, registry)
     else:
-        header, payload = _decode_jws(_value, key, algorithms, registry)
+        header, payload = _decode_jws(
+            _value,
+            key,
+            algorithms,
+            registry,
+            verify_x5c,
+            trusted_ca,
+            at_time,
+            **options,
+        )
 
     try:
         claims = json.loads(payload, cls=decoder_cls)
@@ -130,8 +148,24 @@ def _decode_jwe(
 
 
 def _decode_jws(
-    value: bytes, key: KeyFlexible, algorithms: Collection[str] | None = None, registry: JWSRegistry | None = None
+    value: bytes,
+    key: KeyFlexible,
+    algorithms: Collection[str] | None = None,
+    registry: JWSRegistry | None = None,
+    verify_x5c: Any = False,
+    trusted_ca: Any = None,
+    at_time: datetime | None = None,
+    **options: Any,
 ) -> tuple[Header, bytes]:
-    jws_obj = deserialize_compact(value, key, algorithms, registry)
+    jws_obj = deserialize_compact(
+        value,
+        key,
+        algorithms,
+        registry,
+        verify_x5c=verify_x5c,
+        trusted_ca=trusted_ca,
+        at_time=at_time,
+        **options,
+    )
     assert jws_obj.payload is not None
     return jws_obj.headers(), jws_obj.payload
