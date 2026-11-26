@@ -23,6 +23,15 @@ from ._rfc7516.types import (
     FlattenedJSONSerialization,
     GeneralJSONSerialization,
 )
+from .errors import (
+    CompressionError,
+    DecompressError,
+    DecompressionError,
+    ExceededZipSizeError,
+    InvalidCompressionError,
+    InvalidZipError,
+    ZipError,
+)
 from .jwa import setup_jwe_algorithms
 from .jwk import ECKey, Key, KeyFlexible, KeySet, OKPKey, guess_key
 from .registry import Header, reject_unprotected_crit_header
@@ -45,6 +54,14 @@ __all__ = [
     "decrypt_json",
     # consts
     "default_registry",
+    # errors (compression related)
+    "InvalidZipError",
+    "ExceededZipSizeError",
+    "ZipError",
+    "DecompressError",
+    "DecompressionError",
+    "CompressionError",
+    "InvalidCompressionError",
 ]
 setup_jwe_algorithms()
 

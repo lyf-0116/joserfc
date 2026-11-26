@@ -1,3 +1,4 @@
+import inspect
 import secrets
 from typing import Any
 
@@ -24,6 +25,7 @@ from .models import (
     JWEKeyAgreement,
     JWEKeyEncryption,
     JWEKeyWrapping,
+    JWEZipModel,
     Recipient,
 )
 from .registry import JWERegistry
@@ -70,7 +72,7 @@ def _perform_encrypt(obj: EncryptionData, registry: JWERegistry) -> None:
     plaintext: bytes
     if "zip" in obj.protected:
         zip_ = registry.get_zip(obj.protected["zip"])
-        plaintext = zip_.compress(obj.plaintext)
+        plaintext = _compress_with_limit(zip_, obj.plaintext, registry.get_compress_max_length())
     else:
         plaintext = obj.plaintext
 
@@ -150,9 +152,34 @@ def _perform_decrypt(obj: EncryptionData, registry: JWERegistry) -> None:
     msg = enc.decrypt(ciphertext, tag, cek, iv, aad)
     if "zip" in obj.protected:
         zip_ = registry.get_zip(obj.protected["zip"])
-        obj.plaintext = zip_.decompress(msg)
+        obj.plaintext = _decompress_with_limit(zip_, msg, registry.get_zip_max_length())
     else:
         obj.plaintext = msg
+
+
+def _accepts_max_size(method: Any) -> bool:
+    """Whether a zip model method accepts ``max_size`` (directly or via ``**kwargs``)."""
+    try:
+        parameters = inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        return True
+    if "max_size" in parameters:
+        return True
+    return any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values())
+
+
+def _compress_with_limit(zip_: JWEZipModel, plaintext: bytes, max_size: int | None) -> bytes:
+    if _accepts_max_size(zip_.compress):
+        return zip_.compress(plaintext, max_size=max_size)
+    # Backwards compatibility for custom zip models with the old signature.
+    return zip_.compress(plaintext)
+
+
+def _decompress_with_limit(zip_: JWEZipModel, payload: bytes, max_size: int | None) -> bytes:
+    if _accepts_max_size(zip_.decompress):
+        return zip_.decompress(payload, max_size=max_size)
+    # Backwards compatibility for custom zip models with the old signature.
+    return zip_.decompress(payload)
 
 
 def pre_encrypt_recipients(

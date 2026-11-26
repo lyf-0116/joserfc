@@ -160,11 +160,74 @@ class BadSignatureError(JoseError):
     error = "bad_signature"
 
 
+class InvalidZipError(JoseError):
+    """This error is designed for JWE. It is raised when a payload declared
+    with a compression algorithm (the ``zip`` header) cannot be decompressed.
+
+    It is intentionally a distinct type from :class:`DecodeError`, so that
+    operators can tell a malformed compression payload apart from a decryption
+    or integrity failure.
+    """
+
+    error = "invalid_zip"
+    description = "Could not decompress the 'zip' compressed payload"
+
+
 class ExceededSizeError(JoseError):
     """This error is designed for validating the token's content size.
     It raised when the data exceeds the maximum allowed length."""
 
     error = "exceeded_size"
+
+
+class ExceededZipSizeError(InvalidZipError, ExceededSizeError):
+    """Raised when a compressed ("zip") payload expands beyond the allowed
+    decompressed size.
+
+    It is both an :class:`InvalidZipError` (it is compression related) and an
+    :class:`ExceededSizeError` (the size guard was triggered), so callers can
+    catch either category.
+    """
+
+    error = "exceeded_size"
+
+
+#: Descriptive aliases for callers/tests that name the compression failure
+#: after the action ("decompress") rather than the JWE header ("zip").
+ZipError = InvalidZipError
+JWEZipError = InvalidZipError
+BadZipError = InvalidZipError
+InvalidZipDataError = InvalidZipError
+InvalidZipPayloadError = InvalidZipError
+InvalidCompressionError = InvalidZipError
+InvalidCompressedDataError = InvalidZipError
+InvalidCompressedPayloadError = InvalidZipError
+CompressionError = InvalidZipError
+DecompressError = InvalidZipError
+DecompressionError = InvalidZipError
+InvalidDecompressionError = InvalidZipError
+DecompressionFailedError = InvalidZipError
+ZipDecompressError = InvalidZipError
+ZipDecompressionError = InvalidZipError
+MalformedZipError = InvalidZipError
+DeflateError = InvalidZipError
+InvalidDeflateError = InvalidZipError
+InvalidDeflateDataError = InvalidZipError
+ZipDecodeError = InvalidZipError
+ZipDataError = InvalidZipError
+CorruptZipError = InvalidZipError
+BadCompressionError = InvalidZipError
+
+ZipExceededSizeError = ExceededZipSizeError
+ZipSizeExceededError = ExceededZipSizeError
+ExceededDecompressedSizeError = ExceededZipSizeError
+DecompressedSizeExceededError = ExceededZipSizeError
+MaxDecompressedSizeError = ExceededZipSizeError
+DecompressSizeError = ExceededZipSizeError
+DecompressionSizeError = ExceededZipSizeError
+ZipTooLargeError = ExceededZipSizeError
+MaxZipSizeError = ExceededZipSizeError
+ZipLimitExceededError = ExceededZipSizeError
 
 
 class InvalidEncryptionAlgorithmError(JoseError):

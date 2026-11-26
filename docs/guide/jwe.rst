@@ -230,3 +230,35 @@ It is possible to support non-recommended algorithms by passing the
     jwe.encrypt_compact(protected, plaintext, key, registry=registry)
 
 The registry is a little complex, find out more on the :ref:`registry` section.
+
+Compression size limit
+----------------------
+
+When the protected header contains ``"zip": "DEF"``, the decrypted payload is
+DEFLATE compressed. Decompression is performed in bounded chunks and the
+expanded size is checked against ``JWERegistry.max_zip_length`` (250 KiB by
+default). A small crafted token can otherwise expand into a very large
+plaintext and exhaust process memory.
+
+Raise the limit for endpoints that legitimately exchange large messages:
+
+.. code-block:: python
+
+    from joserfc.jwe import JWERegistry, decrypt_compact
+
+    registry = JWERegistry(max_zip_length=10 * 1024 * 1024)
+    obj = decrypt_compact(token, key, registry=registry)
+
+``DeflateZipModel.decompress(data, max_size=...)`` and its
+``decompress_chunks(data, max_size=..., chunk_size=...)`` iterator accept an
+explicit limit; joined chunks are byte-for-byte identical to a single-shot
+decompression. Oversized output raises :class:`joserfc.errors.ExceededSizeError`
+(specifically ``ExceededZipSizeError``). Corrupt compression data raises
+:class:`joserfc.errors.InvalidZipError`, which is separate from the
+:class:`joserfc.errors.DecodeError` raised for decryption or integrity
+failures, so the two causes can be handled independently.
+
+The compression entry point accepts the same guard via
+``DeflateZipModel.compress(data, max_size=...)``; configure the encryption
+path with ``JWERegistry(max_compress_length=...)`` (an explicitly configured
+``max_zip_length`` also bounds compression input).

@@ -25,6 +25,11 @@ __all__ = [
 KeyType = TypeVar("KeyType")
 
 
+#: Default upper bound for DEFLATE ("zip") decompressed output. Aligned with
+#: the historical ``DeflateZipModel.MAX_SIZE`` value (250 KiB).
+DEFAULT_ZIP_MAX_SIZE = 250 * 1024
+
+
 class Recipient(Generic[KeyType]):
     def __init__(
         self,
@@ -223,12 +228,32 @@ class JWEZipModel(metaclass=ABCMeta):
     algorithm_location: Literal["zip"] = "zip"
 
     @abstractmethod
-    def compress(self, s: bytes) -> bytes:
-        pass
+    def compress(self, s: bytes, max_size: int | None = None) -> bytes:
+        """Compress bytes data.
+
+        :param s: plaintext bytes to compress
+        :param max_size: reject inputs larger than this many bytes; ``None``
+                         means no input limit
+        """
 
     @abstractmethod
-    def decompress(self, s: bytes) -> bytes:
-        pass
+    def decompress(self, s: bytes, max_size: int | None = None) -> bytes:
+        """Decompress bytes data.
+
+        :param s: compressed bytes
+        :param max_size: maximum accepted decompressed size in bytes;
+                         ``None`` falls back to the model default
+        """
+
+    def decompress_chunks(self, s: bytes, max_size: int | None = None, chunk_size: int | None = None):
+        """Yield decompressed output chunks.
+
+        Concrete models are encouraged to override this with a bounded,
+        chunked implementation. The default delegates to :meth:`decompress`
+        and yields the complete result as a single chunk.
+        """
+
+        yield self.decompress(s, max_size=max_size)
 
 
 class KeyManagement:
