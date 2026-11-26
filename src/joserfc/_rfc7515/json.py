@@ -3,13 +3,18 @@ from collections.abc import Callable
 from typing import Any
 
 from ..errors import DecodeError, InvalidHeaderValueError
-from ..registry import reject_unprotected_crit_header
 from ..util import (
-    json_b64decode,
     json_b64encode,
     to_bytes,
     urlsafe_b64decode,
     urlsafe_b64encode,
+)
+from .message import (
+    build_signing_input,
+    decode_payload,
+    parse_header_member,
+    prepare_member,
+    validate_member,
 )
 from .model import (
     FlattenedJSONSignature,
@@ -68,7 +73,7 @@ def sign_flattened_json(
 def sign_json_member(
     payload_segment: bytes, member: HeaderMember, registry: JWSRegistry, find_key: FindKey
 ) -> JSONSignatureDict:
-    headers = check_json_member_headers(member, registry)
+    headers, _ = prepare_member(member, registry)
     alg = registry.get_alg(headers["alg"])
     key = find_key(member)
     alg.check_key(key)
@@ -76,7 +81,7 @@ def sign_json_member(
         protected_segment = json_b64encode(member.protected)
     else:
         protected_segment = b""
-    signing_input = b".".join([protected_segment, payload_segment])
+    signing_input = build_signing_input(protected_segment, payload_segment)
     signature = urlsafe_b64encode(alg.sign(signing_input, key))
     rv: JSONSignatureDict = {"signature": signature.decode("utf-8")}
     if member.protected:
@@ -88,30 +93,22 @@ def sign_json_member(
 
 def extract_general_json(value: GeneralJSONSerialization, registry: JWSRegistry) -> GeneralJSONSignature:
     payload_segment, signatures, members = extract_general_json_parts(value, registry)
-    try:
-        payload = urlsafe_b64decode(payload_segment)
-    except (TypeError, ValueError) as err:
-        raise DecodeError("Invalid payload") from err
-
-    obj = GeneralJSONSignature(members, payload)
+    obj = GeneralJSONSignature(members, b"")
     obj.signatures = signatures
     obj.segments = {"payload": payload_segment}
+    validate_json_signature(obj, registry)
+    obj.payload = decode_payload(payload_segment, True)
     return obj
 
 
 def __signature_to_member(sig: JSONSignatureDict, registry: JWSRegistry) -> HeaderMember:
     if not isinstance(sig, dict):
         raise InvalidHeaderValueError("Invalid 'signatures' member: must be a JSON object")
-    member = HeaderMember()
-    if "protected" in sig:
-        protected_segment = to_bytes(sig["protected"])
-        registry.validate_header_size(protected_segment)
-        member.protected = json_b64decode(protected_segment)
-    if "header" in sig:
-        if not isinstance(sig["header"], dict):
-            raise InvalidHeaderValueError("Invalid 'header' value: must be a JSON object")
-        member.header = sig["header"]
-    return member
+    protected_segment = to_bytes(sig["protected"]) if "protected" in sig else None
+    header = sig.get("header")
+    if "header" in sig and not isinstance(header, dict):
+        raise InvalidHeaderValueError("Invalid 'header' value: must be a JSON object")
+    return parse_header_member(protected_segment, header, registry)
 
 
 def verify_general_json(obj: GeneralJSONSignature, registry: JWSRegistry, find_key: FindKey) -> bool:
@@ -119,6 +116,7 @@ def verify_general_json(obj: GeneralJSONSignature, registry: JWSRegistry, find_k
     if not obj.signatures:
         return False
 
+    validate_json_signature(obj, registry)
     for index, signature in enumerate(obj.signatures):
         member = obj.members[index]
         if not verify_signature(member, signature, payload_segment, registry, find_key):
@@ -129,6 +127,7 @@ def verify_general_json(obj: GeneralJSONSignature, registry: JWSRegistry, find_k
 def verify_flattened_json(obj: FlattenedJSONSignature, registry: JWSRegistry, find_key: FindKey) -> bool:
     payload_segment = obj.segments["payload"]
     assert obj.signature is not None
+    validate_json_signature(obj, registry)
     return verify_signature(obj.member, obj.signature, payload_segment, registry, find_key)
 
 
@@ -139,7 +138,7 @@ def verify_signature(
     registry: JWSRegistry,
     find_key: FindKey,
 ) -> bool:
-    headers = check_json_member_headers(member, registry)
+    headers = validate_member(member, registry)
     alg = registry.get_alg(headers["alg"])
     key = find_key(member)
     alg.check_key(key)
@@ -153,7 +152,7 @@ def verify_signature(
     registry.validate_signature_size(signature_segment)
 
     sig = urlsafe_b64decode(signature_segment)
-    signing_input = b".".join([protected_segment, payload_segment])
+    signing_input = build_signing_input(protected_segment, payload_segment)
     return alg.verify(signing_input, sig, key)
 
 
@@ -168,16 +167,18 @@ def extract_general_json_parts(
     if not isinstance(signatures, list):
         raise InvalidHeaderValueError("Invalid 'signatures' value: must be a list")
     members = [__signature_to_member(signature, registry) for signature in signatures]
-    for member in members:
-        check_json_member_headers(member, registry)
     return payload_segment, signatures, members
 
 
 def check_json_member_headers(member: HeaderMember, registry: JWSRegistry) -> dict[str, Any]:
-    reject_unprotected_crit_header(member.header, member.protected)
-    headers = member.headers()
-    registry.check_header(headers)
-    return headers
+    return validate_member(member, registry)
+
+
+def validate_json_signature(
+    obj: GeneralJSONSignature | FlattenedJSONSignature, registry: JWSRegistry
+) -> None:
+    for member in obj.members:
+        validate_member(member, registry)
 
 
 def detach_json_content(value: dict[str, Any]) -> dict[str, Any]:

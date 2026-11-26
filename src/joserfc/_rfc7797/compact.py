@@ -1,7 +1,13 @@
 import re
 from typing import Any
 
-from .._rfc7515.compact import decode_header
+from .._rfc7515.message import (
+    build_signing_input,
+    decode_payload,
+    encode_payload,
+    parse_header_member,
+    payload_is_base64_encoded,
+)
 from .._rfc7515.model import CompactSignature, JWSAlgModel
 from .._rfc7515.registry import JWSRegistry, default_registry
 from ..errors import DecodeError
@@ -9,15 +15,13 @@ from ..util import (
     json_b64encode,
     to_bytes,
     to_str,
-    urlsafe_b64decode,
     urlsafe_b64encode,
 )
-from .util import is_rfc7797_enabled
 
 
 def sign_rfc7515_compact(obj: CompactSignature, alg: JWSAlgModel, key: Any) -> bytes:
     header_segment = json_b64encode(obj.headers())
-    signing_input = header_segment + b"." + obj.payload
+    signing_input = build_signing_input(header_segment, obj.payload)
     signature = urlsafe_b64encode(alg.sign(signing_input, key))
 
     # if need to detach payload
@@ -48,30 +52,22 @@ def extract_rfc7515_compact(
         raise DecodeError("Invalid JSON Web Signature")
 
     header_segment, payload_segment, signature_segment = parts
-
-    registry.validate_header_size(header_segment)
     registry.validate_signature_size(signature_segment)
     if payload_segment:
         registry.validate_payload_size(payload_segment)
 
-    protected = decode_header(header_segment)
+    member = parse_header_member(header_segment, None, registry, require_alg=True)
+    is_base64_encoded = payload_is_base64_encoded(member)
 
-    if is_rfc7797_enabled(protected):
-        if not payload_segment and payload:
-            payload_segment = to_bytes(payload)
-            registry.validate_payload_size(payload_segment)
-        payload = payload_segment
+    if not payload_segment and payload is not None:
+        payload_value = to_bytes(payload)
+        registry.validate_payload_size(payload_value)
+        payload_segment = encode_payload(payload_value, is_base64_encoded)
     else:
-        if not payload_segment and payload:
-            payload = to_bytes(payload)
-            payload_segment = urlsafe_b64encode(payload)
-        else:
-            try:
-                payload = urlsafe_b64decode(payload_segment)
-            except (TypeError, ValueError) as error:
-                raise DecodeError("Invalid payload") from error
+        payload_value = decode_payload(payload_segment, is_base64_encoded)
 
-    obj = CompactSignature(protected, payload)
+    obj = CompactSignature(member.protected or {}, payload_value)
+    obj.member = member
     obj.segments.update(
         {
             "header": header_segment,

@@ -2,7 +2,7 @@ from abc import ABCMeta, abstractmethod
 from typing import Any, ClassVar, Literal
 
 from ..errors import InvalidKeyTypeError
-from ..registry import Header
+from ..registry import Header, merge_headers
 from .types import JSONSignatureDict, SegmentsDict
 
 __all__ = [
@@ -26,14 +26,8 @@ class HeaderMember:
         self.header = header
 
     def headers(self) -> Header:
-        rv: Header = {}
-        if self.header:
-            rv.update(self.header)
-
         # protected header is preferred
-        if self.protected:
-            rv.update(self.protected)
-        return rv
+        return merge_headers(self.header, self.protected)
 
     def set_kid(self, kid: str) -> None:
         if self.header is None:
@@ -47,18 +41,33 @@ class CompactSignature:
     """
 
     def __init__(self, protected: Header, payload: bytes):
-        #: protected header
-        self.protected = protected
+        #: the header member of the compact signature
+        self.member = HeaderMember(protected=protected)
         #: payload content in bytes
         self.payload = payload
         self.segments: SegmentsDict = {}
 
+    @property
+    def protected(self) -> Header:
+        """The protected header of the compact signature."""
+        assert self.member.protected is not None
+        return self.member.protected
+
+    @protected.setter
+    def protected(self, value: Header) -> None:
+        self.member.protected = value
+
+    @property
+    def members(self) -> list[HeaderMember]:
+        """The single header member of the compact signature."""
+        return [self.member]
+
     def headers(self) -> Header:
         """Returns protected header values in dict."""
-        return self.protected
+        return self.member.headers()
 
     def set_kid(self, kid: str) -> None:
-        self.protected["kid"] = kid
+        self.member.set_kid(kid)
 
 
 class FlattenedJSONSignature:

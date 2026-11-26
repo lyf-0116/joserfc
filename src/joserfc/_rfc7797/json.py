@@ -1,17 +1,23 @@
 from .._rfc7515.json import (
     FindKey,
-    check_json_member_headers,
     extract_general_json_parts,
     sign_json_member,
+    validate_json_signature,
 )
 from .._rfc7515.json import sign_flattened_json as _sign_flattened_json
 from .._rfc7515.json import sign_general_json as _sign_general_json
+from .._rfc7515.message import (
+    decode_payload,
+    parse_header_member,
+    payload_is_base64_encoded,
+    prepare_member,
+    validate_member,
+)
 from .._rfc7515.model import FlattenedJSONSignature, GeneralJSONSignature, HeaderMember
 from .._rfc7515.registry import JWSRegistry
 from .._rfc7515.types import FlattenedJSONSerialization, GeneralJSONSerialization, JSONSignatureDict
-from ..errors import DecodeError, InvalidHeaderValueError, UnsupportedHeaderError
-from ..util import json_b64decode, to_bytes, urlsafe_b64decode
-from .util import is_rfc7797_enabled
+from ..errors import DecodeError, InvalidHeaderValueError
+from ..util import to_bytes
 
 
 def sign_flattened_json(
@@ -41,18 +47,13 @@ def sign_general_json(
 
 def extract_general_json(value: GeneralJSONSerialization, registry: JWSRegistry) -> GeneralJSONSignature:
     payload_segment, signatures, members = extract_general_json_parts(value, registry)
-    payload_is_encoded = _validate_general_members(members, registry)
-    if payload_is_encoded:
-        try:
-            payload = urlsafe_b64decode(payload_segment)
-        except (TypeError, ValueError) as error:
-            raise DecodeError("Invalid payload") from error
-    else:
-        payload = payload_segment
-
-    obj = GeneralJSONSignature(members, payload)
+    obj = GeneralJSONSignature(members, b"")
     obj.signatures = signatures
     obj.segments = {"payload": payload_segment}
+    validate_json_signature(obj, registry)
+
+    payload_is_encoded = _get_general_payload_encoding(members)
+    obj.payload = decode_payload(payload_segment, payload_is_encoded)
     return obj
 
 
@@ -71,31 +72,16 @@ def sign_rfc7797_json(
 def extract_rfc7797_json(value: FlattenedJSONSerialization, registry: JWSRegistry) -> FlattenedJSONSignature:
     if "payload" not in value or not isinstance(value["payload"], str):
         raise DecodeError("Invalid 'payload' member")
-    if "protected" in value:
-        protected_segment = to_bytes(value["protected"])
-        registry.validate_header_size(protected_segment)
-        protected = json_b64decode(protected_segment)
-    else:
-        protected = None
-
+    protected_segment = to_bytes(value["protected"]) if "protected" in value else None
     header = value.get("header")
     if "header" in value and not isinstance(header, dict):
         raise InvalidHeaderValueError("Invalid 'header' value: must be a JSON object")
-    member = HeaderMember(protected, header)
+    member = parse_header_member(protected_segment, header, registry)
 
     payload_segment: bytes = value["payload"].encode("utf-8")
     registry.validate_payload_size(payload_segment)
 
-    payload_is_encoded = _is_payload_base64_encoded(member, registry)
-    if payload_is_encoded:
-        try:
-            payload = urlsafe_b64decode(payload_segment)
-        except (TypeError, ValueError) as error:
-            raise DecodeError("Invalid payload") from error
-    else:
-        payload = payload_segment
-
-    obj = FlattenedJSONSignature(member, payload)
+    obj = FlattenedJSONSignature(member, b"")
     if "signature" not in value:
         raise DecodeError("Missing 'signature' member")
     _sig: JSONSignatureDict = {"signature": value["signature"]}
@@ -105,18 +91,26 @@ def extract_rfc7797_json(value: FlattenedJSONSerialization, registry: JWSRegistr
         _sig["header"] = value["header"]
     obj.signature = _sig
     obj.segments = {"payload": payload_segment}
+    validate_json_signature(obj, registry)
+
+    payload_is_encoded = payload_is_base64_encoded(member)
+    obj.payload = decode_payload(payload_segment, payload_is_encoded)
     return obj
 
 
 def _validate_general_members(members: list[HeaderMember], registry: JWSRegistry) -> bool:
-    payload_encodings = [_is_payload_base64_encoded(member, registry) for member in members]
+    for member in members:
+        validate_member(member, registry)
+    return _get_general_payload_encoding(members)
+
+
+def _get_general_payload_encoding(members: list[HeaderMember]) -> bool:
+    payload_encodings = [payload_is_base64_encoded(member) for member in members]
     if payload_encodings and any(encoded != payload_encodings[0] for encoded in payload_encodings[1:]):
         raise InvalidHeaderValueError("'b64' MUST have the same value for all signatures")
     return payload_encodings[0] if payload_encodings else True
 
 
 def _is_payload_base64_encoded(member: HeaderMember, registry: JWSRegistry) -> bool:
-    check_json_member_headers(member, registry)
-    if member.header and "b64" in member.header:
-        raise UnsupportedHeaderError("'b64' header MUST be protected")
-    return not is_rfc7797_enabled(member.protected or {})
+    _, is_encoded = prepare_member(member, registry)
+    return is_encoded

@@ -4,7 +4,7 @@ from typing import Any, ClassVar, Generic, Literal, TypeVar
 
 from .._keys import ECKey, Key, OctKey
 from ..errors import InvalidKeyLengthError, InvalidKeyTypeError
-from ..registry import Header, HeaderRegistryDict
+from ..registry import Header, HeaderRegistryDict, merge_headers
 
 __all__ = [
     "Recipient",
@@ -40,14 +40,11 @@ class Recipient(Generic[KeyType]):
         self.ephemeral_key: KeyType | None = None
 
     def headers(self) -> Header:
-        rv: Header = {}
-        if isinstance(self.__parent, BaseJSONEncryption) and self.__parent.unprotected:
-            rv.update(self.__parent.unprotected)
-        if self.header:
-            rv.update(self.header)
-
-        rv.update(self.__parent.protected)
-        return rv
+        shared: Header | None = None
+        if isinstance(self.__parent, BaseJSONEncryption):
+            shared = self.__parent.unprotected
+        # protected header is preferred
+        return merge_headers(shared, self.header, self.__parent.protected)
 
     def add_header(self, k: str, v: Any) -> None:
         if isinstance(self.__parent, CompactEncryption):

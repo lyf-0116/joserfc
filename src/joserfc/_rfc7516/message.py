@@ -30,8 +30,10 @@ from .registry import JWERegistry
 
 __all__ = [
     "EncryptionData",
+    "build_aad",
     "perform_encrypt",
     "perform_decrypt",
+    "validate_encryption_headers",
 ]
 
 EncryptionData = CompactEncryption | GeneralJSONEncryption | FlattenedJSONEncryption
@@ -46,8 +48,7 @@ def perform_encrypt(obj: EncryptionData, registry: JWERegistry) -> None:
 
 
 def _perform_encrypt(obj: EncryptionData, registry: JWERegistry) -> None:
-    for recipient in obj.recipients:
-        _check_recipient_header_protection(obj, recipient)
+    validate_encryption_headers(obj)
 
     enc = registry.get_enc(obj.protected["enc"])
     cek, delayed_tasks = pre_encrypt_recipients(enc, obj.recipients, registry)
@@ -75,16 +76,22 @@ def _perform_encrypt(obj: EncryptionData, registry: JWERegistry) -> None:
         plaintext = obj.plaintext
 
     # Step 13, Compute the Encoded Protected Header value BASE64URL(UTF8(JWE Protected Header)).
-    aad = json_b64encode(obj.protected)
+    protected_segment = json_b64encode(obj.protected)
+    obj.base64_segments["protected"] = protected_segment
 
     # Step 14, Let the Additional Authenticated Data encryption parameter be
     # ASCII(Encoded Protected Header).  However, if a JWE AAD value is
     # present (which can only be the case when using the JWE JSON Serialization),
     # instead let the Additional Authenticated Data encryption parameter be
     # ASCII(Encoded Protected Header || '.' || BASE64URL(JWE AAD)).
-    if isinstance(obj, BaseJSONEncryption) and obj.aad:
-        aad = aad + b"." + urlsafe_b64encode(obj.aad)
-    obj.base64_segments["aad"] = aad
+    if isinstance(obj, BaseJSONEncryption):
+        aad_segment = urlsafe_b64encode(obj.aad) if obj.aad else None
+        if aad_segment:
+            obj.base64_segments["aad"] = aad_segment
+        aad = build_aad(protected_segment, aad_segment)
+    else:
+        aad = protected_segment
+        obj.base64_segments["aad"] = protected_segment
 
     # encrypting plaintext
     ciphertext, tag = enc.encrypt(plaintext, cek, iv, aad)
@@ -104,6 +111,8 @@ def perform_decrypt(obj: EncryptionData, registry: JWERegistry) -> None:
 
 
 def _perform_decrypt(obj: EncryptionData, registry: JWERegistry) -> None:
+    validate_encryption_headers(obj)
+
     enc = registry.get_enc(obj.protected["enc"])
 
     iv = obj.bytes_segments["iv"]
@@ -114,7 +123,6 @@ def _perform_decrypt(obj: EncryptionData, registry: JWERegistry) -> None:
 
     cek_set = set()
     for recipient in obj.recipients:
-        _check_recipient_header_protection(obj, recipient)
         try:
             headers = recipient.headers()
             registry.check_header(headers, True)
@@ -141,9 +149,11 @@ def _perform_decrypt(obj: EncryptionData, registry: JWERegistry) -> None:
         cek = secrets.token_bytes(enc.cek_size // 8)
 
     if isinstance(obj, BaseJSONEncryption):
-        aad = json_b64encode(obj.protected)
-        if obj.aad:
-            aad = aad + b"." + obj.base64_segments["aad"]
+        protected_segment = obj.base64_segments.get("protected")
+        if protected_segment is None:
+            protected_segment = json_b64encode(obj.protected)
+        aad_segment = obj.base64_segments.get("aad") if obj.aad else None
+        aad = build_aad(protected_segment, aad_segment)
     else:
         aad = obj.base64_segments["aad"]
 
@@ -201,9 +211,20 @@ def __prepare_recipient_algorithm(recipient: Recipient[Any], registry: JWERegist
 
 
 def _check_recipient_header_protection(obj: EncryptionData, recipient: Recipient[Any]) -> None:
+    reject_unprotected_crit_header(recipient.header, obj.protected)
+
+
+def validate_encryption_headers(obj: EncryptionData) -> None:
     if isinstance(obj, BaseJSONEncryption):
         reject_unprotected_crit_header(obj.unprotected, obj.protected)
-    reject_unprotected_crit_header(recipient.header, obj.protected)
+    for recipient in obj.recipients:
+        _check_recipient_header_protection(obj, recipient)
+
+
+def build_aad(protected_segment: bytes, aad_segment: bytes | None = None) -> bytes:
+    if aad_segment:
+        return protected_segment + b"." + aad_segment
+    return protected_segment
 
 
 def __pre_encrypt_direct_mode(alg: JWEAlgModel, enc: JWEEncModel, recipient: Recipient[Any]) -> bytes:

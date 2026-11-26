@@ -11,6 +11,15 @@ from .errors import (
 Header = dict[str, Any]
 
 
+def merge_headers(*headers: Header | None) -> Header:
+    """Merge JOSE headers in order. Later values take precedence."""
+    rv: Header = {}
+    for header in headers:
+        if header:
+            rv.update(header)
+    return rv
+
+
 def is_str(value: Any) -> None:
     if not isinstance(value, str):
         raise ValueError("must be a str")

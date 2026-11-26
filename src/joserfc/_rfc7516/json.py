@@ -1,7 +1,7 @@
 from typing import Any
 
 from .._keys import Key
-from ..errors import DecodeError
+from ..errors import DecodeError, MissingEncryptionError
 from ..util import (
     json_b64decode,
     json_b64encode,
@@ -72,9 +72,7 @@ def __represent_json_serialization(obj: BaseJSONEncryption) -> Any:
 
 
 def extract_general_json(data: GeneralJSONSerialization, registry: JWERegistry) -> GeneralJSONEncryption:
-    protected_segment = to_bytes(data["protected"])
-    registry.validate_protected_header_size(protected_segment)
-    protected = json_b64decode(protected_segment)
+    protected_segment, protected = __extract_protected(data, registry)
 
     unprotected = data.get("unprotected")
     recipients = data["recipients"]
@@ -83,6 +81,7 @@ def extract_general_json(data: GeneralJSONSerialization, registry: JWERegistry) 
 
     obj = GeneralJSONEncryption(protected, None, unprotected, aad)
     obj.base64_segments = base64_segments
+    obj.base64_segments["protected"] = protected_segment
     obj.bytes_segments = bytes_segments
     for item in recipients:
         recipient = __extract_recipient(obj, item, registry)
@@ -91,17 +90,35 @@ def extract_general_json(data: GeneralJSONSerialization, registry: JWERegistry) 
 
 
 def extract_flattened_json(data: FlattenedJSONSerialization, registry: JWERegistry) -> FlattenedJSONEncryption:
-    protected_segment = to_bytes(data["protected"])
-    registry.validate_protected_header_size(protected_segment)
-    protected = json_b64decode(protected_segment)
+    protected_segment, protected = __extract_protected(data, registry)
     unprotected = data.get("unprotected")
     base64_segments, bytes_segments, aad = __extract_segments(data, registry)
     obj = FlattenedJSONEncryption(protected, None, unprotected, aad)
     obj.base64_segments = base64_segments
+    obj.base64_segments["protected"] = protected_segment
     obj.bytes_segments = bytes_segments
     recipient = __extract_recipient(obj, data, registry)
     obj.recipients.append(recipient)
     return obj
+
+
+def __extract_protected(
+    data: GeneralJSONSerialization | FlattenedJSONSerialization,
+    registry: JWERegistry,
+) -> tuple[bytes, dict[str, Any]]:
+    if "protected" not in data or not isinstance(data["protected"], str):
+        raise DecodeError("Invalid 'protected' member")
+    protected_segment = to_bytes(data["protected"])
+    registry.validate_protected_header_size(protected_segment)
+    try:
+        protected = json_b64decode(protected_segment)
+    except (TypeError, ValueError) as err:
+        raise DecodeError("Invalid header") from err
+    if not isinstance(protected, dict):
+        raise DecodeError("Invalid header")
+    if "enc" not in protected:
+        raise MissingEncryptionError()
+    return protected_segment, protected
 
 
 def __extract_segments(

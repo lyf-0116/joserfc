@@ -11,6 +11,7 @@ from ._rfc7515.json import (
     verify_flattened_json,
     verify_general_json,
 )
+from ._rfc7515.message import prepare_member
 from ._rfc7515.model import (
     CompactSignature,
     FlattenedJSONSignature,
@@ -40,7 +41,6 @@ from ._rfc7797.json import (
     sign_general_json,
 )
 from ._rfc7797.json import extract_rfc7797_json as extract_flattened_json
-from ._rfc7797.util import is_rfc7797_enabled
 from .errors import BadSignatureError, MissingKeyError
 from .jwa import setup_jws_algorithms
 from .jwk import Key, KeyFlexible, guess_key
@@ -100,11 +100,9 @@ def serialize_compact(
     if registry is None:
         registry = construct_registry(algorithms)
 
-    registry.check_header(protected)
-
-    is_rfc7797 = is_rfc7797_enabled(protected)
     obj = CompactSignature(protected, to_bytes(payload))
-    alg: JWSAlgModel = registry.get_alg(protected["alg"])
+    headers, is_base64_encoded = prepare_member(obj.member, registry)
+    alg: JWSAlgModel = registry.get_alg(headers["alg"])
 
     # "none" algorithm requires no key
     key: Key | None = None
@@ -115,10 +113,10 @@ def serialize_compact(
         key = guess_key(private_key, obj, True, use="sig")
         alg.check_key(key)
 
-    if is_rfc7797:
-        out = sign_rfc7515_compact(obj, alg, key)
-    else:
+    if is_base64_encoded:
         out = sign_compact(obj, alg, key)
+    else:
+        out = sign_rfc7515_compact(obj, alg, key)
     return out.decode("utf-8")
 
 
@@ -139,8 +137,7 @@ def validate_compact(
     if registry is None:
         registry = construct_registry(algorithms)
 
-    headers = obj.headers()
-    registry.check_header(headers)
+    headers, _ = prepare_member(obj.member, registry)
     alg: JWSAlgModel = registry.get_alg(headers["alg"])
 
     # "none" algorithm requires no key

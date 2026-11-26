@@ -8,7 +8,11 @@ from ._rfc7516.json import (
     represent_flattened_json,
     represent_general_json,
 )
-from ._rfc7516.message import perform_decrypt, perform_encrypt
+from ._rfc7516.message import (
+    perform_decrypt,
+    perform_encrypt,
+    validate_encryption_headers,
+)
 from ._rfc7516.models import (
     CompactEncryption,
     FlattenedJSONEncryption,
@@ -25,7 +29,7 @@ from ._rfc7516.types import (
 )
 from .jwa import setup_jwe_algorithms
 from .jwk import ECKey, Key, KeyFlexible, KeySet, OKPKey, guess_key
-from .registry import Header, reject_unprotected_crit_header
+from .registry import Header
 from .util import to_bytes
 
 __all__ = [
@@ -82,12 +86,13 @@ def encrypt_compact(
 
     obj = CompactEncryption(protected, to_bytes(plaintext))
     recipient: Recipient[Key] = Recipient(obj)
+    obj.recipient = recipient
+    validate_encryption_headers(obj)
     key = guess_key(public_key, recipient, True, use="enc")
     key.check_use("enc")
     recipient.recipient_key = key
     if sender_key:
         recipient.sender_key = _guess_sender_key(recipient, sender_key, True)
-    obj.recipient = recipient
     perform_encrypt(obj, registry)
     out = represent_compact(obj)
     return out.decode("utf-8")
@@ -128,6 +133,7 @@ def decrypt_compact(
     obj = extract_compact(to_bytes(value), registry)
     recipient = obj.recipient
     assert recipient is not None
+    validate_encryption_headers(obj)
     key = guess_key(private_key, recipient, use="enc")
     key.check_use("enc")
     recipient.recipient_key = key
@@ -196,7 +202,7 @@ def encrypt_json(
     elif registry is None:
         registry = default_registry
 
-    reject_unprotected_crit_header(obj.unprotected)
+    validate_encryption_headers(obj)
     for recipient in obj.recipients:
         if sender_key and not recipient.sender_key:
             recipient.sender_key = _guess_sender_key(recipient, sender_key, True)
@@ -234,14 +240,15 @@ def decrypt_json(
     elif registry is None:
         registry = default_registry
 
-    reject_unprotected_crit_header(data.get("unprotected"))
     if "recipients" in data:
         general_obj = extract_general_json(cast(GeneralJSONSerialization, data), registry)
+        validate_encryption_headers(general_obj)
         _attach_recipient_keys(general_obj.recipients, private_key, sender_key)
         perform_decrypt(general_obj, registry)
         return general_obj
     else:
         flattened_obj = extract_flattened_json(data, registry)
+        validate_encryption_headers(flattened_obj)
         _attach_recipient_keys(flattened_obj.recipients, private_key, sender_key)
         perform_decrypt(flattened_obj, registry)
         return flattened_obj
